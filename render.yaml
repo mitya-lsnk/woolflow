@@ -1,54 +1,33 @@
 # yaml-language-server: $schema=https://render.com/schema/render.yaml.json
 #
-# Hermes Agent on Render
+# Hermes Agent on Render, pre-baked with Render tools.
 # https://github.com/NousResearch/hermes-agent
 #
-# Single web service running the upstream Docker image. The container runs
-# the gateway as the foreground process and the dashboard as a background
-# side-process (HERMES_DASHBOARD=1). Render's public URL serves the
-# dashboard on port 10000; persistent state lives on a 5 GB disk mounted
-# at /opt/data, which is the upstream HERMES_HOME default.
+# Single web service built from the local Dockerfile, which extends the
+# upstream Hermes image with:
+#   - The official render-oss/skills bundle, pinned at a commit
+#   - The Render MCP server pre-registered in config.yaml at boot
+#     with the full MCP tool catalog available to the provided API key
 #
-# Pinned to a specific tag so deploys are reproducible. To update Hermes,
-# bump the image tag and trigger a deploy.
+# Inside the container the gateway runs in the foreground and the
+# dashboard runs as a background side-process (HERMES_DASHBOARD=1).
+# Render's public URL serves the dashboard on port 10000; persistent
+# state lives on a 5 GB disk mounted at /opt/data (HERMES_HOME default).
+#
+# To upgrade Hermes: bump HERMES_IMAGE in the Dockerfile and redeploy.
+# To upgrade Render skills: bump RENDER_SKILLS_REF and redeploy.
 
 services:
   - type: web
     name: hermes
-    runtime: image
+    runtime: docker
     region: oregon
     plan: standard
-    image:
-      url: docker.io/nousresearch/hermes-agent:v2026.5.7
-    # On Render, `dockerCommand` replaces both the image's CMD AND its
-    # ENTRYPOINT. We replicate the upstream ENTRYPOINT chain (tini →
-    # entrypoint.sh) and pass `gateway run` as the foreground subcommand.
-    # The two `touch` lines and the `chown -R` work around upstream
-    # bugs that prevent the in-browser Chat tab from connecting:
-    #
-    #   1. `chown -R hermes:hermes /opt/hermes/ui-tui /opt/hermes/node_modules`
-    #      Workaround for issue #20500: in older v2026.x images the
-    #      tree shipped root-owned but the dashboard runs as hermes.
-    #      Fixed in v2026.5.7's Dockerfile, but harmless to repeat.
-    #
-    #   2. `touch .../packages/hermes-ink/dist/ink-bundle.js`
-    #      The Python staleness check in hermes_cli/main.py looks for
-    #      `dist/ink-bundle.js`, but `@hermes/ink`'s build script is
-    #      `esbuild src/entry-exports.ts --outdir=dist`, which only
-    #      produces `dist/entry-exports.js`. The expected `ink-bundle.js`
-    #      is never created, so `_hermes_ink_bundle_stale()` always
-    #      returns True. Every /api/pty connection then triggers a
-    #      runtime `npm run build` that takes 28+ seconds, which exceeds
-    #      Render/Cloudflare's WebSocket-upgrade idle timeout, and the
-    #      Chat tab fails with HTTP 500. Touching the expected path
-    #      makes the staleness check return False instantly.
-    #
-    #   3. `touch /opt/hermes/ui-tui/dist/entry.js`
-    #      Bumps the entry.js mtime above any source `.ts/.tsx` file,
-    #      so `_tui_build_needed()` also short-circuits. Without this,
-    #      mtime drift between Docker layer commits triggers another
-    #      runtime build for the same reason as above.
-    dockerCommand: /bin/sh -c touch /opt/hermes/ui-tui/packages/hermes-ink/dist/ink-bundle.js /opt/hermes/ui-tui/dist/entry.js && chown -R hermes:hermes /opt/hermes/ui-tui /opt/hermes/node_modules && exec /usr/bin/tini -g -- /opt/hermes/docker/entrypoint.sh gateway run
+    # Render builds the image from this repo's Dockerfile on every deploy.
+    # The Dockerfile FROMs the pinned upstream Hermes image, adds Render
+    # tooling + the skill bundle, and sets ENTRYPOINT to our bootstrap wrapper — so
+    # no `dockerCommand` override is needed here.
+    dockerfilePath: ./Dockerfile
     autoDeployTrigger: off
     healthCheckPath: /api/status
 
@@ -58,10 +37,10 @@ services:
       sizeGB: 5
 
     envVars:
-      # The Blueprint only carries vars that change how the container boots.
-      # All provider keys, tool keys, and chat platform tokens are set
-      # through the Hermes dashboard (API Keys tab), which writes them to
-      # /opt/data/.env on the persistent disk.
+      # The Blueprint only carries vars that change how the container boots
+      # or that wire up the bundled Render tools. All provider keys, tool
+      # keys, and chat platform tokens are set through the Hermes dashboard
+      # (API Keys tab), which writes them to /opt/data/.env on the disk.
 
       # Dashboard side-process. The entrypoint backgrounds `hermes dashboard`
       # before exec'ing `gateway run` whenever HERMES_DASHBOARD is truthy.
@@ -84,3 +63,16 @@ services:
       # server (API_SERVER_ENABLED=true).
       - key: HERMES_GATEWAY_TOKEN
         generateValue: true
+
+      # Bearer token for the pre-registered Render MCP server. Generate
+      # at https://dashboard.render.com/u/*/settings#api-keys and paste
+      # into the dashboard's Environment tab. The boot-time patcher
+      # reads ${RENDER_MCP_API_KEY} into config.yaml lazily, so you can
+      # rotate by editing the env var and restarting — no rebuild needed.
+      #
+      # Named `RENDER_MCP_API_KEY` rather than the stock `RENDER_API_KEY`
+      # to avoid accidental auto-auth if someone later installs the
+      # `render` CLI. This is the same kind of Render API key; the Render
+      # account role behind the key determines what the agent can do.
+      - key: RENDER_MCP_API_KEY
+        sync: false
