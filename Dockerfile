@@ -38,8 +38,11 @@ RUN chmod 0755 /etc/cont-init.d/02-skills-curate
 
 # ---- Lightweight port stub (s6 longrun) so Render sees an open port ----
 # Hooks into the existing s6 supervision tree; uses only the bundled python3.
+# s6-rc requires a `type` file (value "longrun") for every service, or
+# s6-rc-compile fails before /init starts and no port opens.
 RUN mkdir -p /etc/s6-overlay/s6-rc.d/port-stub \
- && mkdir -p /etc/s6-overlay/s6-rc.d/user/contents.d
+ && mkdir -p /etc/s6-overlay/s6-rc.d/user/contents.d \
+ && printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/port-stub/type
 COPY --chown=root:root scripts/port-stub-run /etc/s6-overlay/s6-rc.d/port-stub/run
 RUN chmod 0755 /etc/s6-overlay/s6-rc.d/port-stub/run \
  && touch /etc/s6-overlay/s6-rc.d/user/contents.d/port-stub
