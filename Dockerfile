@@ -1,72 +1,45 @@
 # syntax=docker/dockerfile:1.7
 #
-# Hermes Agent on Render, pre-baked with Render tooling.
+# Hermes Agent on Render — Free-tier fork of render-examples/hermes-render.
 #
-# Extends the upstream NousResearch/hermes-agent image with:
-#   - A bundle of Render-focused skills mounted via skills.external_dirs
-#   - A boot-time patcher that registers the Render MCP server in
-#     config.yaml (idempotent; never overwrites user edits)
-#
-# We deliberately do NOT install the `render` CLI. This image is configured
-# around the Render MCP server; installing extra CLIs should be a conscious
-# operator choice, not something the agent does as an automatic fallback.
-#
-# Pin the upstream tag here. Bump and redeploy to upgrade Hermes.
-ARG HERMES_IMAGE=docker.io/nousresearch/hermes-agent:v2026.5.7
+# Key decisions vs the upstream template:
+# - Pinned to v2026.7.7.2, an s6-overlay image where /init is PID 1. We DO NOT
+#   override ENTRYPOINT/CMD (the <=5.7 tini/bootstrap.sh chain is gone). Instead
+#   we hook into s6's boot via /etc/cont-init.d (skills curator) and register a
+#   tiny s6 longrun that holds the public port open.
+# - The Render MCP server and the 22-skill render-oss bundle are removed to keep
+#   the image small and RAM low on the 512 MB Free instance.
+# - A skills curator prunes the synced skills down to a fixed allowlist each boot.
+# - A ~2 MB python http.server stub binds 0.0.0.0:$PORT so Render's healthcheck
+#   stays green and the Free service is not flagged "no open ports". Hermes
+#   itself talks to Telegram over an outbound long-poll, so it needs no listener.
+# - HERMES_DASHBOARD defaults to 0; flip it to 1 in the Render Dashboard for
+#   temporary browser-based setup, then back to 0.
+
+ARG HERMES_IMAGE=docker.io/nousresearch/hermes-agent:v2026.7.7.2
 FROM ${HERMES_IMAGE}
 
-# Workarounds for upstream issues that prevent the dashboard's Chat tab
-# from connecting on hosted deploys. Baked into the image so the runtime
-# command stays simple. See render.yaml comments + the README for context.
-#   - chown: dashboard runs as `hermes` but ui-tui/ + node_modules/ ship root-owned
-#   - touch ink-bundle.js: short-circuits _hermes_ink_bundle_stale()
-#   - touch entry.js: bumps mtime above source .ts files so _tui_build_needed() returns False
-USER root
-RUN chown -R hermes:hermes /opt/hermes/ui-tui /opt/hermes/node_modules \
- && mkdir -p /opt/hermes/ui-tui/packages/hermes-ink/dist /opt/hermes/ui-tui/dist \
- && touch /opt/hermes/ui-tui/packages/hermes-ink/dist/ink-bundle.js \
-          /opt/hermes/ui-tui/dist/entry.js \
- && chown -R hermes:hermes /opt/hermes/ui-tui
+# Make the stub (and the dashboard, if toggled on) bind the public port.
+ENV PORT=10000
+ENV HOST=0.0.0.0
+ENV HERMES_DASHBOARD_PORT=10000
+ENV HERMES_DASHBOARD_HOST=0.0.0.0
 
-# Pull the official Render skill bundle from github.com/render-oss/skills
-# at a pinned commit. Mounted via skills.external_dirs at boot, so the
-# upstream Hermes skills-sync flow never touches these files. To upgrade,
-# bump RENDER_SKILLS_REF (a commit SHA, tag, or branch) and rebuild.
-ARG RENDER_SKILLS_REPO=render-oss/skills
-ARG RENDER_SKILLS_REF=1b8496570748203351f628b2ae738805ac2c23d5
-RUN set -eu; \
-    tmp="$(mktemp -d)"; \
-    url="https://codeload.github.com/${RENDER_SKILLS_REPO}/tar.gz/${RENDER_SKILLS_REF}"; \
-    curl -fsSL --retry 3 -o "${tmp}/skills.tar.gz" "${url}"; \
-    tar -xzf "${tmp}/skills.tar.gz" -C "${tmp}"; \
-    extracted="$(find "${tmp}" -maxdepth 2 -type d -name 'skills' | head -n 1)"; \
-    test -n "${extracted}" || { echo "could not find skills/ in tarball" >&2; exit 1; }; \
-    install -d -o hermes -g hermes -m 0755 /opt/render-tools/skills-upstream; \
-    cp -a "${extracted}/." /opt/render-tools/skills-upstream/; \
-    chown -R hermes:hermes /opt/render-tools/skills-upstream; \
-    rm -rf "${tmp}"; \
-    echo "${RENDER_SKILLS_REPO}@${RENDER_SKILLS_REF}" > /opt/render-tools/skills-upstream/.source
+# NOTE: the deprecated chown/ink-bundle workarounds from the <=5.7 template are
+# intentionally omitted. v2026.7.x bakes correct permissions at build time via
+# --chmod, so chowning ui-tui/node_modules is unnecessary and would touch paths
+# that the new image manages differently.
 
-# Local overlay: a Hermes-specific `render-on-hermes` skill that tells
-# the agent the MCP server is pre-wired (so skip "install MCP" from
-# upstream skills) and that the CLI is deliberately absent (so don't
-# try to invoke it). Listed FIRST in skills.external_dirs so same-named
-# overlays would shadow upstream entries.
-COPY --chown=hermes:hermes skills/ /opt/render-tools/skills-local/
+# ---- Skills curator: prune synced skills to an allowlist (s6 cont-init) ----
+# Runs once at boot, after stage2-hook has seeded /opt/data and run skills-sync.
+# Idempotent; safe to run on every wake-up (Free's filesystem is ephemeral).
+COPY --chown=root:root scripts/skills-curate.sh /etc/cont-init.d/02-skills-curate
+RUN chmod 0755 /etc/cont-init.d/02-skills-curate
 
-# Boot-time wrapper: patches /opt/data/config.yaml, then hands off to
-# the upstream entrypoint chain (tini → docker/entrypoint.sh).
-COPY --chown=root:root scripts/bootstrap.sh /opt/render-tools/bootstrap.sh
-COPY --chown=root:root scripts/patch-config.py /opt/render-tools/patch-config.py
-RUN chmod 0755 /opt/render-tools/bootstrap.sh /opt/render-tools/patch-config.py
-
-# Pre-create the dir the patcher writes to so chown works cleanly on
-# first boot. The mounted disk replaces this empty dir at runtime;
-# baking it just keeps the image self-contained for any non-disk use.
-RUN install -d -o hermes -g hermes -m 0755 /opt/data
-
-# Stay as root so the bootstrap can chown the mounted /opt/data on first
-# boot, then `gosu hermes` for the config patch, then exec the upstream
-# entrypoint (which also runs as root and does its own gosu drop).
-ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/opt/render-tools/bootstrap.sh"]
-CMD ["gateway", "run"]
+# ---- Lightweight port stub (s6 longrun) so Render sees an open port ----
+# Hooks into the existing s6 supervision tree; uses only the bundled python3.
+RUN mkdir -p /etc/s6-overlay/s6-rc.d/port-stub \
+ && mkdir -p /etc/s6-overlay/s6-rc.d/user/contents.d
+COPY --chown=root:root scripts/port-stub-run /etc/s6-overlay/s6-rc.d/port-stub/run
+RUN chmod 0755 /etc/s6-overlay/s6-rc.d/port-stub/run \
+ && touch /etc/s6-overlay/s6-rc.d/user/contents.d/port-stub
