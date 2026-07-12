@@ -9,5 +9,26 @@
 if [ -n "${HERMES_DASHBOARD:-}" ] && [ "${HERMES_DASHBOARD}" != "0" ]; then
   exec sleep infinity
 fi
-cd /tmp
-exec python3 -m http.server "${PORT:-10000}" --bind "${HOST:-0.0.0.0}"
+
+# Unique marker lets an external pinger (UptimeRobot) confirm the stub itself
+# answered, not a 200 Render returns for a spun-down service.
+cat > /tmp/port_stub_app.py <<'PY'
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import os
+
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("X-Woolflow", "alive")
+        self.end_headers()
+        self.wfile.write(b"woolflow alive")
+    def log_message(self, *a):
+        pass
+
+port = int(os.environ.get("PORT", "10000"))
+host = os.environ.get("HOST", "0.0.0.0")
+ThreadingHTTPServer((host, port), H).serve_forever()
+PY
+
+exec python3 /tmp/port_stub_app.py
