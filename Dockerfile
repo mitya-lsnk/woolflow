@@ -46,3 +46,10 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/port-stub \
 COPY --chown=root:root scripts/port-stub-run /etc/s6-overlay/s6-rc.d/port-stub/run
 RUN chmod 0755 /etc/s6-overlay/s6-rc.d/port-stub/run \
  && touch /etc/s6-overlay/s6-rc.d/user/contents.d/port-stub
+
+# Run the gateway as a long-lived daemon. The upstream ENTRYPOINT is
+# "/init main-wrapper.sh"; with no args it launches an interactive TUI
+# session, which exits immediately in a container (no stdin/tty) and
+# restarts in a loop. Passing "gateway run" makes /init start the
+# gateway daemon that connects Telegram/Discord etc. from env vars.
+CMD ["gateway", "run"]
