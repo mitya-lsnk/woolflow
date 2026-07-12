@@ -1,0 +1,13 @@
+#!/bin/sh
+# s6 longrun: hold a tiny HTTP listener on $PORT (default 10000) bound to
+# 0.0.0.0 so Render's healthcheck and the Free-tier idle watchdog see an open
+# port. Hermes itself uses Telegram over an outbound long-poll, so the stub is
+# the only in-container listener. RAM cost is ~2 MB (python3 stdlib only).
+#
+# If the dashboard is enabled it claims port 10000 itself, so we idle out
+# (sleep infinity) instead of competing for the port.
+if [ -n "${HERMES_DASHBOARD:-}" ] && [ "${HERMES_DASHBOARD}" != "0" ]; then
+  exec sleep infinity
+fi
+cd /tmp
+exec python3 -m http.server "${PORT:-10000}" --bind "${HOST:-0.0.0.0}"
