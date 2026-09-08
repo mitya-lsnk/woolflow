@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
+import time
 import sys
 import urllib.error
 import urllib.request
@@ -255,18 +257,50 @@ def image_tag_exists(tag: str) -> bool:
         return True
 
 
+# Release contents are immutable, so a fetched file can be cached forever under
+# its tag. Without this every run re-downloads gateway/run.py (1.6 MB), and a
+# few runs in a row earn an HTTP 429 that aborts the check mid-list — which
+# reads exactly like a broken assumption when it is only rate limiting.
+CACHE_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "woolflow-upstream-cache"
+
+
+def _cache_path(tag: str, path: str) -> Path:
+    return CACHE_DIR / tag / path.replace("/", "__")
+
+
 def fetch(tag: str, path: str) -> "str | None":
+    cached = _cache_path(tag, path)
+    if cached.is_file():
+        try:
+            return cached.read_text(encoding="utf-8")
+        except OSError:
+            pass
+
     url = f"https://raw.githubusercontent.com/{REPO}/{tag}/{path}"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "woolflow-check-upstream"})
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return resp.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return None
-        fail(f"cannot fetch {path}@{tag} ({exc})")
-    except urllib.error.URLError as exc:
-        fail(f"cannot fetch {path}@{tag} ({exc})")
+    req = urllib.request.Request(url, headers={"User-Agent": "woolflow-check-upstream"})
+    last: "Exception | None" = None
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                body = resp.read().decode("utf-8", "replace")
+            try:
+                cached.parent.mkdir(parents=True, exist_ok=True)
+                cached.write_text(body, encoding="utf-8")
+            except OSError:
+                pass  # cache is an optimisation, never a requirement
+            return body
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            # 429/5xx are transient; anything else is not worth retrying.
+            if exc.code != 429 and exc.code < 500:
+                fail(f"cannot fetch {path}@{tag} ({exc})")
+            last = exc
+        except urllib.error.URLError as exc:
+            last = exc
+        if attempt < 3:
+            time.sleep(2 ** attempt)
+    fail(f"cannot fetch {path}@{tag} after 4 attempts ({last})")
 
 
 def current_pin() -> str:
