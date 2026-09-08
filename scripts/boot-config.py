@@ -98,6 +98,18 @@ PERSONA_CONFIG = {
 # gate, so soul/SOUL.md carries the instruction for handling it in character.
 PERSONA_ONBOARDING = {"profile_build": "off"}
 
+# Cron deliveries otherwise arrive wrapped in "Cronjob Response: <name>
+# (job_id: ...)" plus a footer explaining the agent cannot see the message —
+# correct for an ops brief, fatal for a character writing to you at breakfast.
+PERSONA_CRON = {"wrap_response": False}
+
+# Output ceiling per reply. Unset, Hermes sends the model's native maximum —
+# 128k on the free frontier models — and OpenRouter reserves credit against
+# that ceiling, so a free-tier account is refused with HTTP 402 ("You requested
+# up to 128000 tokens, but can only afford 216") before a single token is
+# generated. The character writes a few lines, so this costs nothing real.
+DEFAULT_MAX_TOKENS = 2000
+
 DEFAULT_MAX_LIVE_SESSIONS = 2
 DEFAULT_MAX_CONCURRENT_SESSIONS = 1
 
@@ -158,6 +170,15 @@ def apply_persona(config: dict) -> list[str]:
             target[key] = value
             changed.append(f"{section}.{key}={value}")
 
+    cron = config.setdefault("cron", {})
+    if isinstance(cron, dict):
+        for key, value in PERSONA_CRON.items():
+            if cron.get(key) != value:
+                cron[key] = value
+                changed.append(f"cron.{key}={value}")
+    else:
+        _warn("cron: is not a mapping; leaving wrap_response alone")
+
     onboarding = config.setdefault("onboarding", {})
     if not isinstance(onboarding, dict):
         _warn("onboarding: is not a mapping; skipping")
@@ -194,16 +215,19 @@ def apply_model(config: dict) -> list[str]:
     is an Anthropic model most deployments here have no key for.
     """
     changed: list[str] = []
-    model = os.environ.get("WOOLFLOW_MODEL", "").strip()
-    if not model:
-        return changed
     section = config.setdefault("model", {})
     if not isinstance(section, dict):
         _warn("model: is not a mapping; leaving the model alone")
         return changed
-    if section.get("default") != model:
+    model = os.environ.get("WOOLFLOW_MODEL", "").strip()
+    if model and section.get("default") != model:
         section["default"] = model
         changed.append(f"model.default={model}")
+    max_tokens = _env_int("WOOLFLOW_MAX_TOKENS", DEFAULT_MAX_TOKENS)
+    if max_tokens > 0 and section.get("max_tokens") != max_tokens:
+        section["max_tokens"] = max_tokens
+        changed.append(f"model.max_tokens={max_tokens}")
+
     provider = os.environ.get("WOOLFLOW_MODEL_PROVIDER", "").strip()
     if provider and section.get("provider") != provider:
         section["provider"] = provider

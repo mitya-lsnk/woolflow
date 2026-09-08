@@ -67,6 +67,12 @@ services:
   # OpenRouter key — e.g. "nvidia" for build.nvidia.com with NVIDIA_API_KEY.
   - key: WOOLFLOW_MODEL_PROVIDER
     sync: false
+  # Output ceiling per reply. Unset, Hermes asks for the model's native maximum
+  # (128k on the free frontier models) and OpenRouter reserves credit against
+  # that ceiling, refusing a free-tier account with HTTP 402 before generating
+  # anything. A few lines of dialogue need nothing like that.
+  - key: WOOLFLOW_MAX_TOKENS
+    value: "2000"
 
   # ---- How much he remembers ----
   # Chars of the memory store replayed into the prompt each turn. Hermes ships
