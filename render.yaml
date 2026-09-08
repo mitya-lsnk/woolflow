@@ -56,6 +56,17 @@ services:
   - key: HERMES_TIMEZONE
     value: "UTC"
 
+  # ---- How much he remembers ----
+  # Chars of the memory store replayed into the prompt each turn. Hermes ships
+  # 2200 / 1375 — a page, sized for an assistant's operational facts, not for a
+  # companion. Disk is not the constraint (memories/ is just files) and neither
+  # is RAM; this is paid in context tokens on every turn, which prompt caching
+  # makes cheap after the first call. Roughly 2.75 chars per token.
+  - key: WOOLFLOW_MEMORY_CHARS
+    value: "6000"
+  - key: WOOLFLOW_USER_MEMORY_CHARS
+    value: "3000"
+
   # ---- Memory profile (512 MB Free) ----
   # Seconds between `[woolflow] mem used=...` lines from the port stub. This is
   # the only view of real memory use on Free, which has no metrics page. Set to

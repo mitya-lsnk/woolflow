@@ -165,6 +165,14 @@ CHECKS = [
                   "longer knows it has no browser and no persistent disk.",
     },
     {
+        "name": "memory replay budget keys",
+        "path": "hermes_cli/config_defaults.py",
+        "pattern": r'"memory_char_limit"',
+        "breaks": "boot-config.py raises memory.memory_char_limit so the "
+                  "character remembers more than a page. If the key moved, he "
+                  "silently drops back to Hermes' 2200-char default.",
+    },
+    {
         "name": "cron create_job() API",
         "path": "cron/jobs.py",
         "pattern": r"^def create_job\(",

@@ -170,6 +170,38 @@ def apply_persona(config: dict) -> list[str]:
     return changed
 
 
+# How much of the memory store is replayed into the prompt each turn. Hermes
+# ships 2200 chars (~800 tokens) for the agent's own notes and 1375 (~500) for
+# the user profile — sized for an assistant that remembers operational facts,
+# not for a companion meant to remember months of conversation.
+#
+# Disk is not the constraint here (the store is files under memories/, and
+# Render does not meter it), and neither is RAM — a few KB of strings. What
+# these numbers actually buy is context on EVERY turn, so the cost is tokens
+# and latency, not capacity. Prompt caching makes the stable part cheap after
+# the first call, which is why raising them is affordable at all.
+DEFAULT_MEMORY_CHARS = 6000        # ~2200 tokens
+DEFAULT_USER_MEMORY_CHARS = 3000   # ~1100 tokens
+
+
+def apply_memory(config: dict) -> list[str]:
+    """Widen the memory replay budget. Returns what changed."""
+    changed: list[str] = []
+    memory = config.setdefault("memory", {})
+    if not isinstance(memory, dict):
+        _warn("memory: is not a mapping; leaving the char limits alone")
+        return changed
+    wanted = {
+        "memory_char_limit": _env_int("WOOLFLOW_MEMORY_CHARS", DEFAULT_MEMORY_CHARS),
+        "user_char_limit": _env_int("WOOLFLOW_USER_MEMORY_CHARS", DEFAULT_USER_MEMORY_CHARS),
+    }
+    for key, value in wanted.items():
+        if memory.get(key) != value:
+            memory[key] = value
+            changed.append(f"memory.{key}={value}")
+    return changed
+
+
 def apply_home_channel(config: dict) -> list[str]:
     """Seed platforms.telegram.home_channel from WOOLFLOW_TELEGRAM_CHAT_ID.
 
@@ -258,6 +290,7 @@ def main() -> int:
     # so they are applied unless BOTH switches are off.
     changed += apply_toolsets(config)
     changed += apply_home_channel(config)
+    changed += apply_memory(config)
     if lowmem:
         changed += apply_profile(config)
     if persona:
