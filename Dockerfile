@@ -129,6 +129,19 @@ COPY --chown=root:root scripts/install-soul.sh /etc/cont-init.d/04-soul
 RUN chmod 0644 /opt/woolflow/SOUL.md \
  && chmod 0755 /etc/cont-init.d/04-soul
 
+# 05-cron re-creates the scheduled jobs. Same reason as the persona: Hermes
+# keeps them in cron/jobs.json under HERMES_HOME, which Free wipes on every
+# spin-down, so a job created from the chat lasts until the next sleep. The
+# installer calls Hermes' own create_job() rather than writing jobs.json, so
+# the stored record is always built by the code that owns the schema.
+COPY --chown=root:root cron/jobs.yaml /opt/woolflow/cron-jobs.yaml
+COPY --chown=root:root scripts/install-cron.py /opt/woolflow/install-cron.py
+RUN chmod 0644 /opt/woolflow/cron-jobs.yaml \
+ && chmod 0755 /opt/woolflow/install-cron.py \
+ && printf '#!/command/with-contenv sh\nexec s6-setuidgid hermes /opt/woolflow/install-cron.py\n' \
+        > /etc/cont-init.d/05-cron \
+ && chmod 0755 /etc/cont-init.d/05-cron
+
 # Run the gateway as a long-lived daemon. The upstream ENTRYPOINT is
 # "/init main-wrapper.sh"; with no args it launches an interactive TUI
 # session, which exits immediately in a container (no stdin/tty) and

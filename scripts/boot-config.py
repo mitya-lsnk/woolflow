@@ -163,6 +163,33 @@ def apply_persona(config: dict) -> list[str]:
     return changed
 
 
+def apply_home_channel(config: dict) -> list[str]:
+    """Seed platforms.telegram.home_channel from WOOLFLOW_TELEGRAM_CHAT_ID.
+
+    A cron job with deliver="telegram" and no explicit chat resolves to the
+    platform's home channel, which is normally written by /sethome. That lands
+    in config.yaml — which Free wipes on every spin-down, so the jobs would
+    lose their destination on the first sleep. Seeding it from an env var keeps
+    the chat id out of the repo and out of a file that does not survive anyway.
+    """
+    chat_id = os.environ.get("WOOLFLOW_TELEGRAM_CHAT_ID", "").strip()
+    if not chat_id:
+        return []
+    platforms = config.setdefault("platforms", {})
+    if not isinstance(platforms, dict):
+        _warn("platforms: is not a mapping; skipping home_channel")
+        return []
+    telegram = platforms.setdefault("telegram", {})
+    if not isinstance(telegram, dict):
+        _warn("platforms.telegram: is not a mapping; skipping home_channel")
+        return []
+    home = {"platform": "telegram", "chat_id": chat_id, "name": "home"}
+    if telegram.get("home_channel") == home:
+        return []
+    telegram["home_channel"] = home
+    return ["platforms.telegram.home_channel"]
+
+
 def apply_profile(config: dict) -> list[str]:
     """Write the memory caps into *config*. Returns what changed."""
     changed: list[str] = []
@@ -223,6 +250,7 @@ def main() -> int:
     # its 150-400 MB) out of the schema AND what keeps the character toolless —
     # so they are applied unless BOTH switches are off.
     changed += apply_toolsets(config)
+    changed += apply_home_channel(config)
     if lowmem:
         changed += apply_profile(config)
     if persona:

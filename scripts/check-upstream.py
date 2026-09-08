@@ -165,6 +165,21 @@ CHECKS = [
                   "longer knows it has no browser and no persistent disk.",
     },
     {
+        "name": "cron create_job() API",
+        "path": "cron/jobs.py",
+        "pattern": r"^def create_job\(",
+        "breaks": "scripts/install-cron.py calls this to rebuild the scheduled "
+                  "jobs each boot instead of hand-writing jobs.json.",
+    },
+    {
+        "name": "cron delivery still resolves a home channel",
+        "path": "gateway/config.py",
+        "pattern": r"class HomeChannel",
+        "breaks": "boot-config.py seeds platforms.telegram.home_channel so "
+                  "deliver=\"telegram\" has a destination. Without it the "
+                  "jobs run but nothing is delivered.",
+    },
+    {
         "name": "browser tools still shipped by default",
         "path": "toolsets.py",
         "pattern": r'"browser_navigate"',
@@ -268,7 +283,9 @@ def run_checks(tag: str) -> bool:
         if src is None:
             status, hit = ("WARN", False) if info else ("FAIL", False)
         else:
-            hit = re.search(check["pattern"], src) is not None
+            # MULTILINE so a pattern can anchor on a line start; without it
+            # `^def foo` silently never matches and reports a false break.
+            hit = re.search(check["pattern"], src, re.M) is not None
             status = "ok" if hit else ("WARN" if info else "FAIL")
         if status == "FAIL":
             ok = False

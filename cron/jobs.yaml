@@ -1,0 +1,36 @@
+# Scheduled jobs, installed into $HERMES_HOME/cron/jobs.json on every boot by
+# scripts/install-cron.py. Free has no persistent disk, so anything created
+# from the chat is gone after the next spin-down — this file is the only place
+# a job survives.
+#
+# Delivery goes to the Telegram home channel, which boot-config.py seeds from
+# WOOLFLOW_TELEGRAM_CHAT_ID. Get your chat id from @userinfobot and set it in
+# Render's Environment tab; it deliberately does not live in this repo.
+#
+# Times follow HERMES_TIMEZONE (render.yaml), NOT the server clock — Render
+# runs UTC, so leaving it unset makes "9am" mean 9am UTC.
+#
+# schedule accepts: "every day at 9am", "every monday 9am", "0 9 * * *",
+# "30m", "2h", or an ISO timestamp for a one-shot.
+#
+# The prompt is an instruction to the agent, not a message to you. Keep it in
+# square brackets: SOUL.md tells the character to obey a bracketed note in his
+# own voice and never repeat a word of it.
+#
+# An answer starting with [SILENT] is logged but not delivered — useful for a
+# job that should only speak when it has something to say.
+
+jobs:
+  - name: утро
+    schedule: every day at 9am
+    prompt: >-
+      [Утро. Напиши ему первым, коротко — две-три фразы. Скажи, где ты и чем
+      занят сегодня. Ничего не спрашивай о его делах и не предлагай помощь.
+      Одну свою мысль обронить можно, если она есть.]
+
+  - name: вечер
+    schedule: every day at 9pm
+    prompt: >-
+      [Вечер. Напиши ему первым, коротко. Расскажи одну вещь, которая
+      случилась с тобой за день, или мысль, которая пришла. Не отчёт и не
+      итоги дня — одна вещь.]

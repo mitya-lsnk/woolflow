@@ -41,6 +41,21 @@ services:
   - key: OPENROUTER_API_KEY
     sync: false
 
+  # ---- Scheduled jobs ----
+  # Jobs live in cron/jobs.yaml and are re-created on every boot; Free wipes
+  # $HERMES_HOME/cron/jobs.json on each spin-down. 0 installs none.
+  - key: WOOLFLOW_CRON
+    value: "1"
+  # Where deliver="telegram" lands. Get it from @userinfobot and set it here —
+  # it is personal data, so it stays out of the repo. Without it a job still
+  # runs and its output is only saved inside the container.
+  - key: WOOLFLOW_TELEGRAM_CHAT_ID
+    sync: false
+  # Cron schedules follow THIS, not the server clock. Render runs UTC, so
+  # leaving it unset makes "every day at 9am" fire at 9am UTC.
+  - key: HERMES_TIMEZONE
+    value: "UTC"
+
   # ---- Memory profile (512 MB Free) ----
   # Seconds between `[woolflow] mem used=...` lines from the port stub. This is
   # the only view of real memory use on Free, which has no metrics page. Set to
