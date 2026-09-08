@@ -184,6 +184,33 @@ DEFAULT_MEMORY_CHARS = 6000        # ~2200 tokens
 DEFAULT_USER_MEMORY_CHARS = 3000   # ~1100 tokens
 
 
+def apply_model(config: dict) -> list[str]:
+    """Pin model.default from WOOLFLOW_MODEL. Returns what changed.
+
+    The gateway reads the model from config.yaml and treats it as the single
+    source of truth (gateway/run.py::_resolve_gateway_model); HERMES_MODEL is
+    only a fallback. config.yaml does not survive a container rebuild, so a
+    model picked with /model silently reverts to Hermes' stock default — which
+    is an Anthropic model most deployments here have no key for.
+    """
+    changed: list[str] = []
+    model = os.environ.get("WOOLFLOW_MODEL", "").strip()
+    if not model:
+        return changed
+    section = config.setdefault("model", {})
+    if not isinstance(section, dict):
+        _warn("model: is not a mapping; leaving the model alone")
+        return changed
+    if section.get("default") != model:
+        section["default"] = model
+        changed.append(f"model.default={model}")
+    provider = os.environ.get("WOOLFLOW_MODEL_PROVIDER", "").strip()
+    if provider and section.get("provider") != provider:
+        section["provider"] = provider
+        changed.append(f"model.provider={provider}")
+    return changed
+
+
 def apply_memory(config: dict) -> list[str]:
     """Widen the memory replay budget. Returns what changed."""
     changed: list[str] = []
@@ -291,6 +318,7 @@ def main() -> int:
     changed += apply_toolsets(config)
     changed += apply_home_channel(config)
     changed += apply_memory(config)
+    changed += apply_model(config)
     if lowmem:
         changed += apply_profile(config)
     if persona:

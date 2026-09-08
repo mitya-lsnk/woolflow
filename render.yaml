@@ -56,6 +56,18 @@ services:
   - key: HERMES_TIMEZONE
     value: "UTC"
 
+  # ---- Model ----
+  # The gateway treats config.yaml as the single source of truth for the model
+  # and config.yaml does not survive a rebuild, so a model chosen with /model
+  # reverts to Hermes' stock Anthropic default on the next deploy. Pin it here.
+  # Leave empty to keep using /model and accept that it resets.
+  - key: WOOLFLOW_MODEL
+    value: "thinkingmachines/inkling:free"
+  # Only needed when the model is not reachable through the configured
+  # OpenRouter key — e.g. "nvidia" for build.nvidia.com with NVIDIA_API_KEY.
+  - key: WOOLFLOW_MODEL_PROVIDER
+    sync: false
+
   # ---- How much he remembers ----
   # Chars of the memory store replayed into the prompt each turn. Hermes ships
   # 2200 / 1375 — a page, sized for an assistant's operational facts, not for a
