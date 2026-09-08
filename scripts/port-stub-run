@@ -1,34 +1,18 @@
-#!/bin/sh
-# s6 longrun: hold a tiny HTTP listener on $PORT (default 10000) bound to
-# 0.0.0.0 so Render's healthcheck and the Free-tier idle watchdog see an open
-# port. Hermes itself uses Telegram over an outbound long-poll, so the stub is
-# the only in-container listener. RAM cost is ~2 MB (python3 stdlib only).
+#!/command/with-contenv sh
+# s6 longrun: hold the public port open so Render's healthcheck and the
+# Free-tier idle watchdog see a listener. Hermes reaches Telegram over an
+# outbound long-poll and opens nothing itself, so this is the container's only
+# listener.
+#
+# The binary is scripts/port-stub.c, compiled at image build time. It costs
+# ~1 MB RSS where the python3 http.server it replaced cost ~12-15 MB, and it
+# prints the cgroup's memory usage to stderr every WOOLFLOW_MEM_INTERVAL
+# seconds — the only view of real RAM use on Free, which has no metrics.
 #
 # If the dashboard is enabled it claims port 10000 itself, so we idle out
-# (sleep infinity) instead of competing for the port.
+# instead of competing for the port.
 if [ -n "${HERMES_DASHBOARD:-}" ] && [ "${HERMES_DASHBOARD}" != "0" ]; then
   exec sleep infinity
 fi
 
-# Unique marker lets an external pinger (UptimeRobot) confirm the stub itself
-# answered, not a 200 Render returns for a spun-down service.
-cat > /tmp/port_stub_app.py <<'PY'
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import os
-
-class H(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain")
-        self.send_header("X-Woolflow", "alive")
-        self.end_headers()
-        self.wfile.write(b"woolflow alive")
-    def log_message(self, *a):
-        pass
-
-port = int(os.environ.get("PORT", "10000"))
-host = os.environ.get("HOST", "0.0.0.0")
-ThreadingHTTPServer((host, port), H).serve_forever()
-PY
-
-exec python3 /tmp/port_stub_app.py
+exec /usr/local/bin/woolflow-port-stub

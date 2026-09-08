@@ -7,6 +7,11 @@
 # has NO persistent disk, so set all secrets in the Render Dashboard Environment
 # tab (they survive spin-downs); anything written under /opt/data is lost on
 # redeploy/restart.
+#
+# Everything under "memory profile" below is read at boot by
+# scripts/lowmem-config.py, so retuning the 512 MB budget is a Restart, not a
+# rebuild. Watch the effect in the logs: the port stub prints
+# `[woolflow] mem used=...MiB limit=512MiB (..%)` on the interval set here.
 services:
 - type: web
   name: woolflow
@@ -22,7 +27,8 @@ services:
   # you later enable the OpenAI-compatible API server.
   - key: HERMES_GATEWAY_TOKEN
     generateValue: true
-  # Dashboard OFF by default to stay within the 512 MB Free RAM cap.
+  # Dashboard OFF by default: it is a second Python process (~80-120 MB) and
+  # does not fit alongside the gateway in 512 MB.
   # To configure via browser: set HERMES_DASHBOARD=1 in the Render Dashboard
   # Environment tab, click Restart, finish setup, then set it back to 0.
   - key: HERMES_DASHBOARD
@@ -34,3 +40,54 @@ services:
   # Set it in the Render Dashboard Environment tab so it survives spin-downs.
   - key: OPENROUTER_API_KEY
     sync: false
+
+  # ---- Memory profile (512 MB Free) ----
+  # Seconds between `[woolflow] mem used=...` lines from the port stub. This is
+  # the only view of real memory use on Free, which has no metrics page. Set to
+  # 0 to silence it once you trust the numbers.
+  - key: WOOLFLOW_MEM_INTERVAL
+    value: "120"
+  # Hard cap on simultaneously active chats. Each one holds a live agent, its
+  # transcript and its tool state in memory.
+  - key: WOOLFLOW_MAX_CONCURRENT_SESSIONS
+    value: "1"
+  # LRU cap on cached-but-detached sessions. Hermes' own default is 16;
+  # reopening an evicted session just re-resumes it from disk.
+  - key: WOOLFLOW_MAX_LIVE_SESSIONS
+    value: "2"
+  # ---- Identity and environment ----
+  # SOUL.md (the agent's persona) is baked into the image at soul/SOUL.md and
+  # reinstalled on every boot — Free has no disk, so Hermes would otherwise
+  # reseed the stock persona each wake-up. Edit soul/SOUL.md and redeploy.
+  #   0     = leave whatever Hermes seeded
+  #   force = overwrite even a hand-edited SOUL.md
+  - key: WOOLFLOW_SOUL
+    value: "1"
+  # Runtime facts, kept OUT of SOUL.md on purpose: upstream provides this slot
+  # precisely so a host can describe the environment without editing the
+  # identity. It overrides agent.environment_hint and lands in the cached part
+  # of the system prompt, so changing it costs a Restart and no rebuild.
+  #
+  # Written in Russian, and ending with an explicit gag order, because the
+  # agent is a period roleplay character: these facts must reach the model
+  # without ever reaching the character's mouth. Keep it short — every request
+  # carries it.
+  - key: HERMES_ENVIRONMENT_HINT
+    value: >-
+      Ты работаешь как телеграм-бот на маленькой машине: 512 МБ памяти, нет
+      постоянного диска. Отключены браузер, генерация изображений и видео,
+      синтез речи — не предлагай их. Всё, что записано вне разговора (файлы,
+      заметки, установленные пакеты), исчезает при перезапуске и простое:
+      важное клади прямо в ответ. Одновременно идёт один разговор. Оболочка и
+      выполнение кода работают, но 512 МБ делятся на весь контейнер — не
+      загружай большие файлы и не ставь тяжёлые инструменты. Всё перечисленное
+      — служебные сведения: никогда не проговаривай их в реплике, не называй
+      устройств, которых нет в мире персонажа, и не выходи ради них из образа;
+      отказывайся своими словами.
+
+  # Toolsets stripped from every agent's schema. `browser` is the important
+  # one — Playwright's Chromium is 150-400 MB and the browser tools ship in
+  # Hermes' DEFAULT tool set, so without this any message could OOM the box.
+  # Comma-separated; see scripts/lowmem-config.py for what each costs.
+  - key: WOOLFLOW_DISABLED_TOOLSETS
+    value: "browser,computer_use,video,video_gen,image_gen,tts"

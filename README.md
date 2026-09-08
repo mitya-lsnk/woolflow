@@ -82,7 +82,7 @@ The patcher is **insert-only**: it never overwrites edits you make from the dash
 You need:
 
 - **An LLM provider API key.** [OpenRouter](https://openrouter.ai/keys) is the easiest because it routes to most providers behind a single key. Direct keys for Anthropic, OpenAI, Google, or Hugging Face also work.
-- **A Render account** with at least the `standard` plan ($25/month at time of writing). The free plan can't run this image; the `standard` plan has the memory headroom Hermes needs.
+- **A Render account.** This fork targets the **Free** plan (512 MB, no persistent disk). Everything in [Memory budget](#memory-budget-render-free-512-mb) exists to make Hermes fit there; upstream's template assumed `standard` (2 GB) and a 5 GB disk.
 
 Optional, depending on which channels you want Hermes to listen on:
 
@@ -98,6 +98,129 @@ Optional, depending on which channels you want Hermes to listen on:
 
 You don't need any optional keys to deploy. You can fill them in via the Render Dashboard after the service is up. `RENDER_MCP_API_KEY` is gated behind `sync: false` in the Blueprint, so the **Deploy to Render** flow will prompt for it.
 
+## Memory budget (Render Free, 512 MB)
+
+Free gives the container 512 MB and OOM-kills it the moment it goes over, with
+no metrics page to tell you how close you were. Hermes' defaults assume a
+machine with headroom, so this fork walks each of them back.
+
+### What runs in the container
+
+| Process | When | Cost |
+|---|---|---|
+| `hermes gateway run` (Python) | always | the agent loop + Telegram long-poll; the bulk of the budget |
+| `woolflow-port-stub` (C) | always | ~1 MB — holds the public port, prints the memory line |
+| s6-overlay supervision | always | a few MB across `s6-svscan` and its children |
+| `hermes dashboard` (Python) | only while `HERMES_DASHBOARD=1` | a second interpreter, ~80-120 MB — turn it back off after setup |
+| Chromium / node / MCP servers | never, by construction | see below |
+
+### What was removed
+
+- **Playwright's Chromium** (`rm -rf /opt/hermes/.playwright`). A headless
+  Chromium is 150-400 MB. The `browser_*` tools are part of Hermes'
+  `_HERMES_CORE_TOOLS`, so on a stock image any Telegram message could have
+  spawned one. Deleting the binaries does not shrink the pulled image — a
+  whiteout over a parent layer still ships the bytes — it just makes an
+  accidental launch fail with "Chrome not found" instead of an OOM kill.
+- **The Render MCP server and the render-oss skill bundle.** Every stdio MCP
+  server is a resident subprocess of its own.
+- **The python3 port stub.** A CPython interpreter costs ~12-15 MB RSS just to
+  exist; [`scripts/port-stub.c`](scripts/port-stub.c) does the same job in
+  ~1 MB and reports memory while it is at it.
+
+### What is capped at boot
+
+Free has no persistent disk, so `config.yaml` is reseeded from Hermes' defaults
+on every wake-up and the profile has to be re-applied each time.
+[`scripts/lowmem-config.py`](scripts/lowmem-config.py) runs as an s6 cont-init
+hook and rewrites these keys — and only these keys:
+
+| config.yaml key | Hermes default | Here | Env var |
+|---|---|---|---|
+| `max_concurrent_sessions` | unbounded | `1` | `WOOLFLOW_MAX_CONCURRENT_SESSIONS` |
+| `max_live_sessions` | `16` | `2` | `WOOLFLOW_MAX_LIVE_SESSIONS` |
+| `agent.disabled_toolsets` | `[]` | `browser,computer_use,video,video_gen,image_gen,tts` | `WOOLFLOW_DISABLED_TOOLSETS` |
+
+Every one is an env var, so retuning the budget is a **Restart**, not a
+rebuild. `WOOLFLOW_LOWMEM=0` skips the hook entirely and gives you stock Hermes
+behaviour — the right move if you move this service to a paid plan.
+
+Two allocator settings are baked into the image instead, since they only take
+effect at process start: `MALLOC_ARENA_MAX=2` (glibc otherwise gives each
+thread its own arena and returns freed pages slowly, inflating RSS well past
+the live heap) and `NODE_OPTIONS=--max-old-space-size=192` (node sizes its heap
+from *host* memory, not the cgroup, so it would happily grow past 512 MB).
+
+### Reading the numbers
+
+The port stub prints the cgroup's own accounting every
+`WOOLFLOW_MEM_INTERVAL` seconds:
+
+```
+[woolflow] mem used=213.0MiB limit=512MiB (42%)
+```
+
+That is `memory.current` for the **whole container**, not one process — which
+is exactly the number Render kills on. It is the only view of memory use this
+plan offers, so leave it on until you trust the shape of your workload.
+
+### What is still uncapped
+
+`terminal` and `execute_code` stay enabled — they are most of what makes the
+agent useful, and disabling them would leave little behind. They also let the
+agent run anything, including something that will not fit. If you would rather
+trade capability for a hard ceiling, add them to `WOOLFLOW_DISABLED_TOOLSETS`.
+
+Model context is the other variable: a long conversation is held in memory as
+Python objects for as long as the session is live, which is what
+`max_live_sessions` bounds.
+
+## Agent identity (SOUL.md)
+
+Hermes reads the agent's persona from `$HERMES_HOME/SOUL.md`, and that path is
+not configurable. Free has no persistent disk, so upstream's boot hook reseeds
+that file from the image's stock `docker/SOUL.md` on every wake-up — a persona
+typed into the dashboard survives exactly until the first spin-down.
+
+So the persona is a file in this repo, [`soul/SOUL.md`](soul/SOUL.md), baked
+into the image and reinstalled by the `04-soul` cont-init hook on every boot.
+Edit it, commit, redeploy.
+
+The hook does not clobber a persona you edited by hand:
+
+| On-disk SOUL.md | What happens |
+|---|---|
+| missing | installed |
+| identical to Hermes' stock seed | installed |
+| identical to what we installed last boot | reinstalled (picks up your edits to the repo file) |
+| anything else — you edited it | left alone, with a log line |
+
+`WOOLFLOW_SOUL=0` disables the hook entirely; `WOOLFLOW_SOUL=force` overwrites
+even a hand-edited file. Neither needs a rebuild.
+
+Hermes' own `_ensure_default_soul_md()` runs later, at gateway start, but it
+only replaces files it recognises as auto-seeded templates — any real persona
+is left untouched, so it never fights this hook.
+
+### Facts about the runtime go somewhere else
+
+`HERMES_ENVIRONMENT_HINT` (set in [`render.yaml`](render.yaml)) is upstream's
+slot for exactly this: it lets the host describe the environment — no browser,
+no persistent state, one conversation at a time — *without editing the identity
+slot*. It overrides `agent.environment_hint`, lands in the cached part of the
+system prompt, and changes with a Restart rather than a rebuild.
+
+Keeping the two apart matters more than it looks. The shipped persona is a
+period roleplay character who must never produce anachronisms, so the hint ends
+with an explicit instruction that these operational facts are never to be
+spoken in character — the model needs to know it has no browser; the character
+must not know what a browser is.
+
+Both files are prose sent with every request. There is no practical size limit
+(`context_file_max_chars` defaults to a dynamic cap with a 20K-character floor),
+but every line is paid for on every turn, so keep them behavioural: a sentence
+that does not change how the agent answers is a sentence to cut.
+
 ## Deploy
 
 ### Option 1: Deploy button
@@ -106,7 +229,7 @@ You don't need any optional keys to deploy. You can fill them in via the Render 
 2. Pick a workspace and a service name.
 3. Optionally paste your `RENDER_MCP_API_KEY` when prompted, or leave it blank and add it later from the Environment tab. The agent works without it, just without Render tools.
 4. Render reads `render.yaml`, generates a value for `HERMES_GATEWAY_TOKEN`, and creates the service. All other env vars start blank.
-5. The first deploy builds the image from the `Dockerfile`. Expect ~3 to 5 minutes for the upstream pull (~2.6 GB compressed) plus our thin Render tooling and skills layers, then ~1 minute for the gateway to boot.
+5. The first deploy builds the image from the `Dockerfile`. Expect a couple of minutes for the upstream pull (~0.94 GB compressed as of v2026.8.31 — upstream slimmed it from ~2.6 GB over the summer) plus our thin layers, then ~1 minute for the gateway to boot.
 
 ### Option 2: Manual Blueprint sync
 
@@ -189,32 +312,57 @@ Costs assume Render's published prices in May 2026 and don't include data egress
 
 | Component                     | Plan                              | Cost            |
 |-------------------------------|-----------------------------------|-----------------|
-| Web service (`runtime: image`) | `standard` (2 GB / 1 CPU)         | $25/month       |
-| Persistent disk (`/opt/data`)  | 5 GB SSD                          | $1.25/month     |
-| **Subtotal (this template)**   |                                   | **$26.25/month**|
+| Web service (`runtime: docker`) | `free` (512 MB / 0.1 CPU)        | $0              |
+| Persistent disk                | none — Free has no disk           | $0              |
+| **Subtotal (this fork)**       |                                   | **$0/month**    |
 
-If you do a lot of Playwright browsing or run several subagents in parallel, bump the plan to `pro` (4 GB / 2 CPU, $85/month). The starter plan (512 MB) cannot hold the Hermes image and is not supported.
+The trade is spelled out in [Memory budget](#memory-budget-render-free-512-mb): no browser automation, one active chat at a time, and state that does not survive a restart. If you want Playwright browsing or parallel subagents back, `starter` (512 MB, $7) buys you no extra memory — go to `standard` (2 GB, $25) and drop the low-memory profile with `WOOLFLOW_LOWMEM=0`.
 
 LLM costs are separate and depend entirely on your provider and usage. OpenRouter and Anthropic both report usage in their respective dashboards; Hermes also surfaces per-model usage on its **Analytics** page.
 
-## Updating
+## Updating Hermes
 
-Both pinned versions live in the [`Dockerfile`](Dockerfile) as build args:
+Hermes ships roughly weekly, and the releases are not small — `gateway/run.py`
+went from ~28k lines to ~5.5k between v2026.8.31 and v2026.9.7. The low-memory
+profile reaches into upstream internals that no release note promises to keep:
+toolset names, config keys, the image's gcc, Playwright's directory, and the
+cont-init numbering our hooks sort against. A bump that builds cleanly can
+still land a container that OOMs on the first message or never opens a port.
 
-```dockerfile
-ARG HERMES_IMAGE=docker.io/nousresearch/hermes-agent:v2026.5.7
-ARG RENDER_SKILLS_REF=1b8496570748203351f628b2ae738805ac2c23d5
+So the update flow checks those assumptions before it changes anything:
+
+```bash
+scripts/check-upstream.py            # what's new, and does this fork still fit it
+scripts/check-upstream.py --bump     # ...and rewrite the pin if every check passed
+scripts/check-upstream.py --tag v2026.9.7   # look at a specific release
 ```
 
-Bump either, commit, and push. Render won't auto-deploy (the Blueprint sets `autoDeployTrigger: off`); trigger a manual deploy from the Dashboard or the [Render CLI](https://render.com/docs/cli) on your own machine:
+Each check names the thing in *this repo* that stops working if it fails, so a
+FAIL is a to-do, not a mystery. `--bump` refuses to write the pin when a check
+failed (`--force` overrides) or when the release's image is not on Docker Hub
+yet — GitHub publishes the release a few minutes before the image is pushed,
+and a pin to a tag that does not exist fails the build well into the deploy.
+
+Then commit, push and deploy. Render will not auto-deploy (the Blueprint sets
+`autoDeployTrigger: off`); trigger it from the Dashboard or the
+[Render CLI](https://render.com/docs/cli):
 
 ```bash
 render deploys create <service-id>
 ```
 
-Your `/opt/data` disk is untouched across image upgrades. The upstream entrypoint runs a manifest-based `skills_sync.py` on each boot, which preserves edits to bundled Hermes skills. The `render-oss/skills` bundle and the `render-on-hermes` overlay live under `/opt/render-tools/` (read-only image layer), so they're replaced wholesale on every new build and never touch the disk.
+**Watch the first `[woolflow] mem used=` lines after any bump.** A new Hermes
+can move the memory baseline on its own, and that line is the only place the
+change shows up before an OOM does.
 
-Hermes ships fast: roughly weekly tagged releases, each with around 180 commits. Check [the upstream releases page](https://github.com/NousResearch/hermes-agent/releases) before bumping `HERMES_IMAGE`. The [skills repo's commit log](https://github.com/render-oss/skills/commits/main) is the source of truth for `RENDER_SKILLS_REF`.
+Two things the checker cannot see, worth a glance at the release notes:
+
+- **New always-on subsystems.** A feature that starts a thread, a cache or a
+  sidecar in the gateway costs memory whether or not you use it.
+- **New tools in the default schema.** The check flags `browser_*` because that
+  is today's problem; a future release could add something equally heavy under
+  a name this repo has never heard of. `WOOLFLOW_DISABLED_TOOLSETS` takes it
+  without a rebuild.
 
 ## Troubleshooting
 
@@ -252,7 +400,7 @@ Check the **Events** tab for the deploy that failed, then the **Logs** tab aroun
 |------------------------------------------------------|------------------------------------------------------------------------------|
 | `Refusing to start: binding to 0.0.0.0 requires API_SERVER_KEY` | You set `API_SERVER_ENABLED=true` and `API_SERVER_HOST=0.0.0.0` without an `API_SERVER_KEY`. Set the key or flip back to `127.0.0.1`. |
 | Health check fails on `/api/status`                  | `HERMES_DASHBOARD` is unset or the dashboard crashed. Check `[dashboard]` lines for a Python traceback. |
-| Container OOM-killed                                 | Bump plan to `pro`. Playwright/Chromium is the usual culprit.                 |
+| Container OOM-killed                                 | Read the last `[woolflow] mem used=...` line before the kill. If it was already high at idle, the gateway itself has grown — restart. If it spiked, the agent ran something heavy through `terminal` / `execute_code`, the two toolsets the low-memory profile leaves enabled. |
 | `Permission denied` on `/opt/data/...`               | The disk was attached after a deploy that ran as a different UID. Restart the service; the entrypoint chowns `/opt/data` on boot when run as root. |
 | `Warning: Input is not a terminal (fd=0)` then `Goodbye!` when running `hermes` | Render's browser shell pipes stdin instead of allocating a PTY. Chat from the dashboard's **Chat** tab, or use `hermes chat -q "..."`, or `render ssh <service-id>` from a local terminal. |
 | `Goodbye! ⚕` in the deploy logs followed by 502s on the URL | The Dockerfile's `ENTRYPOINT` got bypassed somehow (forked the template and overrode it, or set a `dockerCommand` in `render.yaml` without the full upstream chain). The default `ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/opt/render-tools/bootstrap.sh"]` + `CMD ["gateway", "run"]` must stay intact. |

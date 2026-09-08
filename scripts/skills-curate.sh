@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/command/with-contenv sh
 # Prune Hermes' synced skills down to a fixed allowlist. Idempotent.
 # Runs at boot (s6 cont-init) after stage2-hook seeds /opt/data.
 #
