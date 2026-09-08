@@ -28,10 +28,13 @@
 #   boot. A headless Chromium is 150-400 MB — the single largest OOM risk here,
 #   and `browser_*` sits in Hermes' DEFAULT tool schema, so any Telegram
 #   message could have triggered it.
-# - A cont-init hook rewrites config.yaml on every boot with the low-memory
-#   profile (session caps + disabled toolsets). Free has no persistent disk, so
-#   config.yaml is reseeded from Hermes' defaults on every wake-up and the
-#   profile has to be re-applied each time.
+# - A cont-init hook rewrites config.yaml on every boot with this fork's
+#   profile: session caps, an empty tool schema, and Hermes' assistant framing
+#   switched off. Free has no persistent disk, so config.yaml is reseeded from
+#   Hermes' defaults on every wake-up and the profile has to be re-applied each
+#   time — including the first-contact "introduce yourself and mention /help"
+#   note, whose gate is an empty session store and so fires after every
+#   spin-down.
 # - The port stub is a ~1 MB C binary instead of a ~12-15 MB python3
 #   http.server, and it doubles as the memory reporter (Free has no metrics).
 # - HERMES_DASHBOARD defaults to 0; flip it to 1 in the Render Dashboard for
@@ -104,16 +107,16 @@ RUN chmod 0755 /etc/s6-overlay/s6-rc.d/port-stub/run \
 # skills sync), 015-supervise-perms and 02-reconcile-profiles. Ours sort after
 # all of those, so /opt/data is seeded by the time they run.
 #
-# 02-skills-curate prunes the synced skills to an allowlist. 03-lowmem-config
-# writes the memory profile into the freshly seeded config.yaml. Both are
+# 02-skills-curate prunes the synced skills to an allowlist. 03-boot-config
+# writes the memory AND persona profiles into the freshly seeded config.yaml. Both are
 # idempotent and safe on every wake-up, which matters because Free's
 # filesystem is ephemeral and re-seeds each time.
 COPY --chown=root:root scripts/skills-curate.sh /etc/cont-init.d/02-skills-curate
-COPY --chown=root:root scripts/lowmem-config.py /opt/woolflow/lowmem-config.py
-RUN chmod 0755 /etc/cont-init.d/02-skills-curate /opt/woolflow/lowmem-config.py \
- && printf '#!/command/with-contenv sh\nexec s6-setuidgid hermes /opt/woolflow/lowmem-config.py\n' \
-        > /etc/cont-init.d/03-lowmem-config \
- && chmod 0755 /etc/cont-init.d/03-lowmem-config
+COPY --chown=root:root scripts/boot-config.py /opt/woolflow/boot-config.py
+RUN chmod 0755 /etc/cont-init.d/02-skills-curate /opt/woolflow/boot-config.py \
+ && printf '#!/command/with-contenv sh\nexec s6-setuidgid hermes /opt/woolflow/boot-config.py\n' \
+        > /etc/cont-init.d/03-boot-config \
+ && chmod 0755 /etc/cont-init.d/03-boot-config
 
 # 04-soul installs the agent's identity. Hermes reads it from
 # $HERMES_HOME/SOUL.md — a path that is not configurable — and upstream's

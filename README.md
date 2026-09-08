@@ -132,14 +132,14 @@ machine with headroom, so this fork walks each of them back.
 
 Free has no persistent disk, so `config.yaml` is reseeded from Hermes' defaults
 on every wake-up and the profile has to be re-applied each time.
-[`scripts/lowmem-config.py`](scripts/lowmem-config.py) runs as an s6 cont-init
+[`scripts/boot-config.py`](scripts/boot-config.py) runs as an s6 cont-init
 hook and rewrites these keys — and only these keys:
 
 | config.yaml key | Hermes default | Here | Env var |
 |---|---|---|---|
 | `max_concurrent_sessions` | unbounded | `1` | `WOOLFLOW_MAX_CONCURRENT_SESSIONS` |
 | `max_live_sessions` | `16` | `2` | `WOOLFLOW_MAX_LIVE_SESSIONS` |
-| `agent.disabled_toolsets` | `[]` | `browser,computer_use,video,video_gen,image_gen,tts` | `WOOLFLOW_DISABLED_TOOLSETS` |
+| `agent.disabled_toolsets` | `[]` | all 24 capability toolsets — see below | `WOOLFLOW_DISABLED_TOOLSETS` |
 
 Every one is an env var, so retuning the budget is a **Restart**, not a
 rebuild. `WOOLFLOW_LOWMEM=0` skips the hook entirely and gives you stock Hermes
@@ -164,16 +164,29 @@ That is `memory.current` for the **whole container**, not one process — which
 is exactly the number Render kills on. It is the only view of memory use this
 plan offers, so leave it on until you trust the shape of your workload.
 
-### What is still uncapped
+### The agent has no tools at all
 
-`terminal` and `execute_code` stay enabled — they are most of what makes the
-agent useful, and disabling them would leave little behind. They also let the
-agent run anything, including something that will not fit. If you would rather
-trade capability for a hard ceiling, add them to `WOOLFLOW_DISABLED_TOOLSETS`.
+The 24 disabled toolsets cover all 53 entries of Hermes' `_HERMES_CORE_TOOLS`,
+so the model is handed an empty tool list. That is a state Hermes supports
+explicitly — `agent_init.py` prints *"No tools loaded (all tools filtered out
+or unavailable)"* rather than failing.
 
-Model context is the other variable: a long conversation is held in memory as
-Python objects for as long as the session is live, which is what
+The reason is the persona (a character who cannot explain a shell has no
+business having one), but it settles the memory question as a side effect.
+`browser` was always the largest risk — Playwright's Chromium is 150-400 MB and
+`browser_*` ships in Hermes' DEFAULT schema. `terminal` and `code_execution`
+were the last uncapped ones, since they let the agent run anything at all
+inside a 512 MB cgroup. With the schema empty, nothing in the container can
+allocate on the agent's behalf.
+
+What is left is the gateway process itself plus whatever the conversation
+holds. Model context is the remaining variable: a long conversation stays in
+memory as Python objects for as long as the session is live, which is what
 `max_live_sessions` bounds.
+
+If you want the agent to actually *do* things, drop entries from
+`WOOLFLOW_DISABLED_TOOLSETS` — it is an env var, so that is a Restart, not a
+rebuild. Re-adding `browser` on this plan will OOM the container.
 
 ## Agent identity (SOUL.md)
 
@@ -201,6 +214,32 @@ even a hand-edited file. Neither needs a rebuild.
 Hermes' own `_ensure_default_soul_md()` runs later, at gateway start, but it
 only replaces files it recognises as auto-seeded templates — any real persona
 is left untouched, so it never fights this hook.
+
+### Stripping the assistant out
+
+A persona file alone leaves you with something half character, half bot,
+because Hermes adds its own framing around it. `WOOLFLOW_PERSONA=1` (the
+default) turns those off in `config.yaml`:
+
+| Setting | What it was adding |
+|---|---|
+| `onboarding.profile_build: off` | On first contact: *"introduce yourself, mention /help shows commands"*, plus an offer to build a profile of the user |
+| `agent.task_completion_guidance: false` | A "# Finishing the job" brief about deliverables and real tool output |
+| `agent.verify_guidance: false` | "Verify your work" nudges |
+| `agent.parallel_tool_call_guidance: false` | ~70 tokens on batching tool calls that no longer exist |
+| `agent.environment_probe: false` | The host's Python/pip/PEP-668 state — an outright anachronism leak |
+| `agent.coding_context: off` | A coding operating brief plus a git/workspace snapshot |
+
+The onboarding one matters more here than upstream intends. Its gate is
+"has this install ever had a session?", and the session store lives in
+ephemeral `/opt/data` — so on Free it reads as *the user's very first message
+ever* after **every** spin-down. Left at its default, the agent re-introduces
+itself as a program each time the service wakes up.
+
+Turning it off downgrades that to a plain "briefly introduce yourself and
+mention /help" note, which has no config gate of its own. That last step is
+handled in `soul/SOUL.md`, which tells the character how to read a bracketed
+system note: obey its intent, in his own voice, and never repeat a word of it.
 
 ### Facts about the runtime go somewhere else
 
@@ -400,7 +439,7 @@ Check the **Events** tab for the deploy that failed, then the **Logs** tab aroun
 |------------------------------------------------------|------------------------------------------------------------------------------|
 | `Refusing to start: binding to 0.0.0.0 requires API_SERVER_KEY` | You set `API_SERVER_ENABLED=true` and `API_SERVER_HOST=0.0.0.0` without an `API_SERVER_KEY`. Set the key or flip back to `127.0.0.1`. |
 | Health check fails on `/api/status`                  | `HERMES_DASHBOARD` is unset or the dashboard crashed. Check `[dashboard]` lines for a Python traceback. |
-| Container OOM-killed                                 | Read the last `[woolflow] mem used=...` line before the kill. If it was already high at idle, the gateway itself has grown — restart. If it spiked, the agent ran something heavy through `terminal` / `execute_code`, the two toolsets the low-memory profile leaves enabled. |
+| Container OOM-killed                                 | Read the last `[woolflow] mem used=...` line before the kill. If it was already high at idle, the gateway itself has grown — restart. If it spiked during a turn, look at what the conversation was carrying — with every toolset disabled, nothing but context and the gateway itself allocates here. |
 | `Permission denied` on `/opt/data/...`               | The disk was attached after a deploy that ran as a different UID. Restart the service; the entrypoint chowns `/opt/data` on boot when run as root. |
 | `Warning: Input is not a terminal (fd=0)` then `Goodbye!` when running `hermes` | Render's browser shell pipes stdin instead of allocating a PTY. Chat from the dashboard's **Chat** tab, or use `hermes chat -q "..."`, or `render ssh <service-id>` from a local terminal. |
 | `Goodbye! ⚕` in the deploy logs followed by 502s on the URL | The Dockerfile's `ENTRYPOINT` got bypassed somehow (forked the template and overrode it, or set a `dockerCommand` in `render.yaml` without the full upstream chain). The default `ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/opt/render-tools/bootstrap.sh"]` + `CMD ["gateway", "run"]` must stay intact. |

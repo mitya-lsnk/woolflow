@@ -73,7 +73,7 @@ CHECKS = [
         "name": "cont-init hooks still numbered 01/015/02",
         "path": "Dockerfile",
         "pattern": r"/etc/cont-init\.d/01-hermes-setup",
-        "breaks": "Our 02-skills-curate and 03-lowmem-config rely on lexical "
+        "breaks": "Our 02-skills-curate and 03-boot-config rely on lexical "
                   "ordering to run AFTER upstream seeds /opt/data. New "
                   "numbering could put them first, against an unseeded config.",
     },
@@ -119,6 +119,24 @@ CHECKS = [
                   "the agent's schema — the single largest OOM risk here.",
     },
     {
+        "name": "onboarding.profile_build still gates the first-contact offer",
+        "path": "agent/onboarding.py",
+        "pattern": r'onboarding\.get\("profile_build"\)',
+        "breaks": "Without this switch the agent opens every conversation by "
+                  "offering to build a user profile and mentioning /help. On a "
+                  "diskless box that fires after every spin-down, not once.",
+    },
+    {
+        "name": "zero-tool schema is a supported state",
+        "path": "agent/agent_init.py",
+        # The whole persona rests on disabling every toolset. If Hermes stops
+        # tolerating an empty tool list, that stops being safe.
+        "pattern": r"No tools loaded",
+        "breaks": "boot-config.py disables all 24 capability toolsets, leaving "
+                  "the model no tools. Hermes handling that gracefully is the "
+                  "assumption the whole character rests on.",
+    },
+    {
         "name": "SOUL.md read from HERMES_HOME",
         "path": "agent/prompt_builder.py",
         # The path is not configurable, so scripts/install-soul.sh writes
@@ -156,9 +174,15 @@ CHECKS = [
     },
 ]
 
-# Toolset names scripts/lowmem-config.py disables, and the config keys it
+# Toolset names scripts/boot-config.py disables, and the config keys it
 # writes. Verified against the candidate's own sources rather than assumed.
-DISABLED_TOOLSETS = ["browser", "computer_use", "video", "video_gen", "image_gen", "tts"]
+DISABLED_TOOLSETS = [
+    "browser", "computer_use", "terminal", "code_execution", "delegation",
+    "file", "web", "search", "x_search", "skills", "cronjob", "memory",
+    "todo", "clarify", "session_search", "context_engine", "project",
+    "vision", "video", "video_gen", "image_gen", "tts", "homeassistant",
+    "kanban",
+]
 CONFIG_KEYS = ["max_live_sessions", "max_concurrent_sessions"]
 # DEFAULT_CONFIG moved out of config.py into config_defaults.py in v0.20.x, so
 # accept either home.
@@ -254,7 +278,7 @@ def run_checks(tag: str) -> bool:
             print(f"         {reason} in {path}")
             print(f"         {check['breaks']}")
 
-    # Toolset names we disable must still exist, or lowmem-config.py silently
+    # Toolset names we disable must still exist, or boot-config.py silently
     # writes entries that match nothing and the browser comes back.
     toolsets_src = sources.get("toolsets.py") or fetch(tag, "toolsets.py") or ""
     missing = [t for t in DISABLED_TOOLSETS if f'"{t}":' not in toolsets_src]
@@ -262,7 +286,7 @@ def run_checks(tag: str) -> bool:
         ok = False
         print(f"  [FAIL] toolset names in WOOLFLOW_DISABLED_TOOLSETS")
         print(f"         gone from toolsets.py: {', '.join(missing)}")
-        print("         scripts/lowmem-config.py would disable nothing for those.")
+        print("         scripts/boot-config.py would disable nothing for those.")
     else:
         print("  [  ok] toolset names in WOOLFLOW_DISABLED_TOOLSETS")
 
@@ -277,7 +301,7 @@ def run_checks(tag: str) -> bool:
         ok = False
         print("  [FAIL] session cap config keys")
         print(f"         not in {' or '.join(CONFIG_PATHS)}: {', '.join(missing_keys)}")
-        print("         scripts/lowmem-config.py would write keys Hermes ignores.")
+        print("         scripts/boot-config.py would write keys Hermes ignores.")
     else:
         print("  [  ok] session cap config keys")
 
