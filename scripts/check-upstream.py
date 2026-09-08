@@ -193,7 +193,7 @@ CHECKS = [
 # writes. Verified against the candidate's own sources rather than assumed.
 DISABLED_TOOLSETS = [
     "browser", "computer_use", "terminal", "code_execution", "delegation",
-    "file", "web", "search", "x_search", "skills", "cronjob", "memory",
+    "file", "web", "search", "x_search", "skills", "cronjob",
     "todo", "clarify", "session_search", "context_engine", "project",
     "vision", "video", "video_gen", "image_gen", "tts", "homeassistant",
     "kanban",

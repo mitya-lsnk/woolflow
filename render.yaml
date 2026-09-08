@@ -102,9 +102,10 @@ services:
       образа. Если у тебя просят что-то сделать, ты просто не понимаешь, о чём
       речь.
 
-  # Toolsets stripped from every agent's schema. These 24 cover all 53 tools in
-  # Hermes' core set, so the model gets an empty tool list — a state Hermes
-  # handles explicitly. That is what makes the character toolless (he cannot
+  # Toolsets stripped from every agent's schema. These 23 cover every tool in
+  # Hermes' core set except `memory`, which stays as his only durable notebook
+  # (it writes to memories/ and returns in the prompt later). That is what makes
+  # the character effectively toolless (he cannot
   # offer or run anything, so he never has to explain why he won't) and, at the
   # same time, what removes every remaining OOM risk: `browser` is Playwright's
   # 150-400 MB Chromium, and `terminal` / `code_execution` let the agent run
@@ -112,4 +113,4 @@ services:
   # Inbound Telegram photos still reach the model — image input is a separate
   # path from the vision toolset.
   - key: WOOLFLOW_DISABLED_TOOLSETS
-    value: "browser,computer_use,terminal,code_execution,delegation,file,web,search,x_search,skills,cronjob,memory,todo,clarify,session_search,context_engine,project,vision,video,video_gen,image_gen,tts,homeassistant,kanban"
+    value: "browser,computer_use,terminal,code_execution,delegation,file,web,search,x_search,skills,cronjob,todo,clarify,session_search,context_engine,project,vision,video,video_gen,image_gen,tts,homeassistant,kanban"

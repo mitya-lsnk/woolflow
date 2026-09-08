@@ -40,10 +40,17 @@ CONFIG_PATH = Path(os.environ.get("HERMES_HOME", "/opt/data")) / "config.yaml"
 
 # Toolsets removed from every agent's schema. This fork runs a roleplay
 # persona, not an assistant: the character has no tools, so a tool it cannot
-# explain is worse than no tool at all. Between them these 24 cover all 53
-# entries of Hermes' _HERMES_CORE_TOOLS, which leaves the model with an empty
-# tool list — a state Hermes handles explicitly ("No tools loaded (all tools
-# filtered out or unavailable)", agent/agent_init.py).
+# explain is worse than no tool at all.
+#
+# One exception: `memory` stays. It is the only durable notebook the character
+# has — it writes to $HERMES_HOME/memories/ and comes back in the system prompt
+# on later turns, which is what lets him remember a conversation from last week
+# instead of meeting you fresh every time. It is also invisible in chat, so it
+# costs nothing in voice. (/compress is NOT this: it shrinks the running
+# conversation to fit the context window, it does not save anything.)
+#
+# Everything else goes. These 23 cover every entry of _HERMES_CORE_TOOLS except
+# the memory tool, so the schema holds exactly one tool.
 #
 # It is also what finally closes the memory question. `browser` was always the
 # largest OOM risk (Playwright's Chromium, 150-400 MB, and browser_* ships in
@@ -54,7 +61,7 @@ CONFIG_PATH = Path(os.environ.get("HERMES_HOME", "/opt/data")) / "config.yaml"
 # through image_input_mode, which is a separate path from the vision toolset.
 DEFAULT_DISABLED_TOOLSETS = [
     "browser", "computer_use", "terminal", "code_execution", "delegation",
-    "file", "web", "search", "x_search", "skills", "cronjob", "memory",
+    "file", "web", "search", "x_search", "skills", "cronjob",
     "todo", "clarify", "session_search", "context_engine", "project",
     "vision", "video", "video_gen", "image_gen", "tts", "homeassistant",
     "kanban",

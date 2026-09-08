@@ -72,6 +72,18 @@ def main() -> int:
         warn(f"cannot read existing jobs ({exc}); assuming none")
         existing = set()
 
+    # Mirroring a cron message into the live chat is what gives the character
+    # any memory of his own day: without it he never sees what he said at
+    # breakfast. Hermes only mirrors when the delivery target IS the job's
+    # origin — an origin-less job is treated as a broadcast and deliberately
+    # not mirrored (cron/scheduler.py::_target_matches_origin) — so stamp the
+    # chat as the origin ourselves.
+    chat_id = os.environ.get("WOOLFLOW_TELEGRAM_CHAT_ID", "").strip()
+    origin = {"platform": "telegram", "chat_id": chat_id} if chat_id else None
+    if not origin:
+        warn("WOOLFLOW_TELEGRAM_CHAT_ID is unset; jobs will run but deliver "
+             "nowhere and will not be visible to the agent later")
+
     created, skipped = [], []
     for entry in wanted:
         if not isinstance(entry, dict):
@@ -90,7 +102,14 @@ def main() -> int:
                 prompt=str(prompt).strip(),
                 schedule=str(schedule).strip(),
                 name=name,
-                deliver=str(entry.get("deliver", "telegram")).strip(),
+                # "origin" so the message lands in — and is mirrored into —
+                # the chat we stamped above. Falls back to the home channel
+                # when we have no chat id to stamp with.
+                deliver=str(entry.get("deliver", "origin" if origin else "telegram")).strip(),
+                origin=origin,
+                # Append the result to the session as an assistant turn, so his
+                # next reply can see what he already said today.
+                attach_to_session=bool(entry.get("attach_to_session", True)),
                 repeat=entry.get("repeat"),
             )
             created.append(name)
