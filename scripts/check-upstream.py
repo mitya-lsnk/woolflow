@@ -123,7 +123,10 @@ CHECKS = [
     {
         "name": "onboarding.profile_build still gates the first-contact offer",
         "path": "agent/onboarding.py",
-        "pattern": r'onboarding\.get\("profile_build"\)',
+        # The reader function, not the accessor: v2026.9.7 moved the lookup
+        # behind an _onboarding_section() helper and the literal ".get(" call
+        # vanished while the feature stayed exactly where it was.
+        "pattern": r"def profile_build_mode",
         "breaks": "Without this switch the agent opens every conversation by "
                   "offering to build a user profile and mentioning /help. On a "
                   "diskless box that fires after every spin-down, not once.",
@@ -144,7 +147,9 @@ CHECKS = [
         # The path is not configurable, so scripts/install-soul.sh writes
         # straight to $HERMES_HOME/SOUL.md. If the identity slot ever moves,
         # the persona silently stops loading — nothing errors.
-        "pattern": r'_home / "SOUL\.md"',
+        # The assignment of the read path, which survived prompt_builder.py
+        # shrinking from ~2200 lines to ~1600 between v2026.8.31 and v2026.9.7.
+        "pattern": r'soul_path\s*=.*"SOUL\.md"',
         "breaks": "scripts/install-soul.sh installs the persona at "
                   "$HERMES_HOME/SOUL.md. A moved identity slot means the "
                   "agent quietly boots with the stock Hermes persona.",
